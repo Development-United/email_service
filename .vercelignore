@@ -18,10 +18,8 @@ pytest.ini
 # Docker files
 Dockerfile
 docker-compose.yml
-docker-compose.prod.yml
 
 # Development
-.git/
 .vscode/
 .idea/
 *.swp
@@ -29,12 +27,6 @@ docker-compose.prod.yml
 .DS_Store
 Thumbs.db
 
-# Documentation
-README.md
-DEPLOYMENT.md
-Makefile
-
 # Development dependencies
 requirements-dev.txt
 main.py
-uv.lock

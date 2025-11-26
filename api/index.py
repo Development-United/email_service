@@ -2,12 +2,14 @@
 Vercel serverless entry point
 """
 import sys
-import os
+from pathlib import Path
 
 # Add parent directory to path to import our modules
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+parent_dir = str(Path(__file__).resolve().parent.parent)
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
 
 from app import app
 
-# Vercel expects the app to be named 'app' or use a handler
-handler = app
+# Export app for Vercel
+app = app
