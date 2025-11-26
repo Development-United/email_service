@@ -1,0 +1,17 @@
+# Core dependencies
+fastapi
+uvicorn[standard]
+pydantic
+pydantic-settings
+
+# Email handling
+secure-smtplib
+
+# Environment and configuration
+python-dotenv
+
+# Async and retry logic
+tenacity
+
+# HTTP client for health checks
+requests

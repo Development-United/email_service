@@ -1,0 +1,36 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "app.py",
+      "use": "@vercel/python"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "app.py"
+    }
+  ],
+  "env": {
+    "ENVIRONMENT": "production",
+    "DEBUG": "false",
+    "LOG_LEVEL": "INFO",
+    "LOG_FORMAT": "json",
+    "API_HOST": "0.0.0.0",
+    "API_PORT": "8000",
+    "API_PREFIX": "/api/v1",
+    "SMTP_SERVER": "smtp.gmail.com",
+    "SMTP_PORT": "587",
+    "SENDER_EMAIL": "tech@asklena.ai",
+    "SENDER_NAME": "Lena (AskLena.AI)",
+    "EMAIL_TEMPLATE_PATH": "email_template.html",
+    "EMAIL_TIMEOUT": "30",
+    "EMAIL_MAX_RETRIES": "3",
+    "EMAIL_RETRY_DELAY": "2",
+    "RATE_LIMIT_ENABLED": "false",
+    "RATE_LIMIT_REQUESTS": "10",
+    "RATE_LIMIT_WINDOW": "60",
+    "CORS_ORIGINS": "[\"*\"]"
+  }
+}
