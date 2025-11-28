@@ -3,16 +3,22 @@ Email service with retry logic and async support
 """
 import smtplib
 import asyncio
+import datetime
+import uuid
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
+from email.mime.base import MIMEBase
+from email import encoders
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Dict, Optional, Tuple
 from tenacity import (
     retry,
     stop_after_attempt,
     wait_exponential,
     retry_if_exception_type,
 )
+import dateparser
+import pytz
 
 from config import get_settings
 from exceptions import (
@@ -41,6 +47,80 @@ class EmailService:
                 f"Email template not found: {self.settings.email_template_path}"
             )
         logger.info(f"Email template validated: {template_path}")
+
+    def _parse_meeting_time(self, raw_time_string: str) -> Tuple[Optional[datetime.datetime], Optional[datetime.datetime]]:
+        """
+        Converts human string (e.g., "Nov 29th 5pm PST") into a strict UTC datetime object.
+
+        Args:
+            raw_time_string: Human-readable time string
+
+        Returns:
+            Tuple of (start_time_utc, end_time_utc) or (None, None) if parsing fails
+        """
+        settings = {
+            'TIMEZONE': 'US/Pacific',
+            'RETURN_AS_TIMEZONE_AWARE': True
+        }
+
+        dt = dateparser.parse(raw_time_string, settings=settings)
+
+        if not dt:
+            logger.error(f"Could not parse time: {raw_time_string}")
+            return None, None
+
+        # Calculate End Time (15 minute meeting)
+        dt_end = dt + datetime.timedelta(minutes=15)
+
+        # Convert both to UTC (Computer Time) for the ICS file
+        dt_start_utc = dt.astimezone(pytz.utc)
+        dt_end_utc = dt_end.astimezone(pytz.utc)
+
+        return dt_start_utc, dt_end_utc
+
+    def _generate_ics_content(self, user_name: str, user_email: str, start_utc: datetime.datetime, end_utc: datetime.datetime) -> str:
+        """
+        Creates the text content for the .ics calendar file.
+
+        Args:
+            user_name: Name of the user
+            user_email: Email address of the user
+            start_utc: Meeting start time in UTC
+            end_utc: Meeting end time in UTC
+
+        Returns:
+            ICS file content as string
+        """
+        # Formatting time as YYYYMMDDTHHMMSSZ
+        fmt = "%Y%m%dT%H%M%SZ"
+        start_str = start_utc.strftime(fmt)
+        end_str = end_utc.strftime(fmt)
+        now_str = datetime.datetime.now(datetime.timezone.utc).strftime(fmt)
+        unique_id = str(uuid.uuid4())
+
+        meet_link = self.settings.permanent_meeting_link
+
+        # The ICS Body with attendees
+        ics_body = f"""BEGIN:VCALENDAR
+VERSION:2.0
+PRODID:-//Ask Lena AI//Voice Agent//EN
+METHOD:REQUEST
+BEGIN:VEVENT
+UID:{unique_id}
+DTSTAMP:{now_str}
+DTSTART:{start_str}
+DTEND:{end_str}
+SUMMARY:Voice AI Strategy Call: {user_name} <> Ask Lena
+DESCRIPTION:Hi {user_name},\\n\\nThis is the technical discovery call you booked with Lena.\\n\\nHost: Chitraksha ({self.settings.host_email})\\n\\nJoin the Google Meet here: {meet_link}
+LOCATION:{meet_link}
+ORGANIZER;CN=Ask Lena AI:mailto:{self.settings.sender_email}
+ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN={user_name}:mailto:{user_email}
+ATTENDEE;ROLE=REQ-PARTICIPANT;RSVP=TRUE;CN=Chitraksha:mailto:{self.settings.host_email}
+STATUS:CONFIRMED
+END:VEVENT
+END:VCALENDAR"""
+
+        return ics_body
 
     def _load_template(self) -> str:
         """
@@ -80,10 +160,11 @@ class EmailService:
         html_content = self._load_template()
         personalized = html_content.replace("{user_name}", user_name)
         personalized = personalized.replace("{meeting_time}", meeting_time)
+        personalized = personalized.replace("{GOOGLE_MEET_LINK_HERE}", self.settings.permanent_meeting_link)
         return personalized
 
     def _create_message(
-        self, user_name: str, user_email: str, meeting_time: str, personalized_html: str
+        self, user_name: str, user_email: str, meeting_time: str, personalized_html: str, ics_content: Optional[str] = None
     ) -> MIMEMultipart:
         """
         Create email message
@@ -93,25 +174,30 @@ class EmailService:
             user_email: Email address
             meeting_time: Meeting time string
             personalized_html: Personalized HTML content
+            ics_content: Optional ICS calendar content
 
         Returns:
             MIME message object
         """
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"Confirmation: Tech Discovery Call with {user_name}"
+        msg = MIMEMultipart("mixed")
+        msg["Subject"] = f"Invitation: Tech Discovery Call with {user_name}"
         msg["From"] = f"{self.settings.sender_name} <{self.settings.sender_email}>"
         msg["To"] = user_email
+        msg["Cc"] = self.settings.host_email
 
-        # Plain text fallback
-        text_content = (
-            f"Hi {user_name}, your meeting is confirmed for {meeting_time}. "
-            f"A calendar invitation has been sent separately."
-        )
-        text_part = MIMEText(text_content, "plain")
-        html_part = MIMEText(personalized_html, "html")
+        # Create HTML part
+        msg_html = MIMEMultipart("alternative")
+        msg_html.attach(MIMEText(personalized_html, "html"))
+        msg.attach(msg_html)
 
-        msg.attach(text_part)
-        msg.attach(html_part)
+        # Attach ICS file if provided
+        if ics_content:
+            part_ics = MIMEBase("text", "calendar", method="REQUEST", name="invite.ics")
+            part_ics.set_payload(ics_content)
+            encoders.encode_base64(part_ics)
+            part_ics.add_header('Content-Description', 'Meeting Invitation')
+            part_ics.add_header('Content-class', 'urn:content-classes:calendarmessage')
+            msg.attach(part_ics)
 
         return msg
 
@@ -121,13 +207,13 @@ class EmailService:
         retry=retry_if_exception_type((smtplib.SMTPException, ConnectionError)),
         reraise=True,
     )
-    def _send_via_smtp(self, msg: MIMEMultipart, recipient: str) -> None:
+    def _send_via_smtp(self, msg: MIMEMultipart, recipients: list) -> None:
         """
         Send email via SMTP with retry logic
 
         Args:
             msg: Email message
-            recipient: Recipient email address
+            recipients: List of recipient email addresses
 
         Raises:
             SMTPConnectionError: If SMTP connection fails
@@ -142,9 +228,9 @@ class EmailService:
             )
             server.starttls()
             server.login(self.settings.sender_email, self.settings.email_password)
-            server.sendmail(self.settings.sender_email, recipient, msg.as_string())
+            server.sendmail(self.settings.sender_email, recipients, msg.as_string())
             server.quit()
-            logger.info(f"Email sent successfully to {recipient}")
+            logger.info(f"Email sent successfully to {', '.join(recipients)}")
 
         except smtplib.SMTPAuthenticationError as e:
             logger.error(f"SMTP authentication failed: {e}")
@@ -181,19 +267,30 @@ class EmailService:
         logger.info(f"Processing email request for {user_email}", extra=extra)
 
         try:
+            # Parse meeting time
+            start_utc, end_utc = self._parse_meeting_time(meeting_time)
+            if not start_utc:
+                raise EmailSendError(f"Could not parse meeting time: {meeting_time}")
+
             # Personalize template
             personalized_html = self._personalize_template(user_name, meeting_time)
 
-            # Create message
-            msg = self._create_message(user_name, user_email, meeting_time, personalized_html)
+            # Generate ICS content
+            ics_content = self._generate_ics_content(user_name, user_email, start_utc, end_utc)
+
+            # Create message with ICS attachment
+            msg = self._create_message(user_name, user_email, meeting_time, personalized_html, ics_content)
+
+            # Prepare recipients list (user and host)
+            recipients = [user_email, self.settings.host_email]
 
             # Send email in thread pool to avoid blocking
             loop = asyncio.get_event_loop()
-            await loop.run_in_executor(None, self._send_via_smtp, msg, user_email)
+            await loop.run_in_executor(None, self._send_via_smtp, msg, recipients)
 
             result = {
                 "success": True,
-                "message": f"Email successfully sent to {user_email}",
+                "message": f"Email successfully sent to {user_email} (and copied {self.settings.host_email})",
                 "recipient": user_email,
             }
             logger.info(f"Email request completed successfully for {user_email}", extra=extra)

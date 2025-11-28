@@ -39,6 +39,10 @@ class Settings(BaseSettings):
     email_max_retries: int = 3
     email_retry_delay: int = 2
 
+    # Meeting settings
+    host_email: str = "chitraksha@asklena.ai"
+    permanent_meeting_link: str = "https://meet.google.com/igx-icor-cnz"
+
     # Rate limiting
     rate_limit_enabled: bool = True
     rate_limit_requests: int = 10

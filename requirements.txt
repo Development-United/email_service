@@ -3,7 +3,8 @@ fastapi
 uvicorn[standard]
 pydantic
 pydantic-settings
-
+dateparser
+pytz
 # Email handling
 secure-smtplib
 
